@@ -126,6 +126,7 @@ By the end of the project, you should have:
 
 #### Project Members
 - Alexander Devine
+- Bryan Susanto
 - Kajal Patel
 - Luke Davey
 - Naveen Premkumar
