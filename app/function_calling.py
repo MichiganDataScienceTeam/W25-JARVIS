@@ -1,68 +1,27 @@
 from ollama import ChatResponse, chat
-import googlemaps
-from googleapiclient.discovery import build
+from functions import send_email, make_event, search_in_browser, handle_general_query
+import logging
+import json
 from google.oauth2.credentials import Credentials
-import requests
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-import os.path
+from googleapiclient.discovery import build
 
-# Define the scopes needed for Google Docs and Drive
-SCOPES = [
-    'https://www.googleapis.com/auth/documents',
-    'https://www.googleapis.com/auth/drive.file'
-]
-
-#this thing you need to do to create the credentials.json file
-def get_credentials():
-    creds = None
-    # The file token.json stores the user's access and refresh tokens
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    
-    # If there are no (valid) credentials available, let the user log in
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'credentials.json', SCOPES)
-            creds = flow.run_local_server(port=0)
-        # Save the credentials for the next run
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    
-    return creds
-
-# Run the authentication flow
-creds = get_credentials()
-print("Authentication successful! Token has been saved to token.json")
-
-
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 def create_google_doc(title: str, text: str) -> str:
     """
     Create a Google Doc and insert text.
-
     Args:
         title (str): Title of the document.
         text (str): Text to insert into the document.
-
     Returns:
         str: The URL of the created document.
     """
     try:
         creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/documents', 'https://www.googleapis.com/auth/drive.file'])
-
-        # Create the Docs API service
         docs_service = build('docs', 'v1', credentials=creds)
-
-        # Create the document
         doc = docs_service.documents().create(body={'title': title}).execute()
         document_id = doc['documentId']
-
-        # Insert text
         requests = [
             {
                 'insertText': {
@@ -71,9 +30,7 @@ def create_google_doc(title: str, text: str) -> str:
                 }
             }
         ]
-
         docs_service.documents().batchUpdate(documentId=document_id, body={'requests': requests}).execute()
-
         doc_url = f"https://docs.google.com/document/d/{document_id}/edit"
         print(f"Document created: {doc_url}")
         return doc_url
@@ -81,94 +38,207 @@ def create_google_doc(title: str, text: str) -> str:
         print(f"Error creating document: {str(e)}")
         return None
 
-
-# Replace with your actual API Key
-GOOGLE_MAP_API_KEY = "YOUR_GOOGLE_MAP_API_KEY" #TODO: Replace with your actual Google Maps API key
-
-# Initialize Google Maps Client
-gmaps = googlemaps.Client(key=GOOGLE_MAP_API_KEY)
-
-def get_walking_distance(origin, destination):
-    """
-    Calculate the walking distance and duration between two locations using Google Maps API.
-    
-    :param origin: Starting location (address or "latitude,longitude")
-    :param destination: Destination location (address or "latitude,longitude")
-    :return: A dictionary with distance and duration
-    """
-    try:
-        result = gmaps.distance_matrix(
-            origins=origin,
-            destinations=destination,
-            mode="walking"  # Set the mode to walking
-        )
-
-        # Extract distance and duration
-        if result["status"] == "OK":
-            elements = result["rows"][0]["elements"][0]
-            if elements["status"] == "OK":
-                distance = elements["distance"]["text"]  # e.g., "2.3 km"
-                duration = elements["duration"]["text"]  # e.g., "28 mins"
-                return {"distance": distance, "duration": duration}
-            else:
-                return {"error": f"Could not calculate distance: {elements['status']}"}
-        else:
-            return {"error": f"API Error: {result['status']}"}
-
-    except Exception as e:
-        return {"error": str(e)}
-
-def add_two_numbers(a: int, b: int) -> int:
-    """
-    Add two numbers
-
-    Args:
-        a (int): The first number
-        b (int): The second number
-
-    Returns:
-        int: The sum of the two numbers
-    """
-    return int(a) + int(b)
-
-def subtract_two_numbers(a: int, b: int) -> int:
-    """
-    Subtract two numbers
-
-    Args:
-        a (int): The first number
-        b (int): The second number
-
-    Returns:
-        int: The difference of the two numbers
-    """
-    return int(a) - int(b)
-
-def search_in_browser(query):
-    import webbrowser
-    url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-    webbrowser.open(url, new=2)
-
 available_functions = {
-    "add_two_numbers": add_two_numbers,
-    "subtract_two_numbers": subtract_two_numbers,
     "search_in_browser": search_in_browser,
-    "get_walking_distance": get_walking_distance,
+    "send_email": send_email,
+    "make_event": make_event,
+    "handle_general_query": handle_general_query,
     "create_google_doc": create_google_doc
 }
 
-def handle_chat(messages):
+# Hard-coded responses for each function
+function_responses = {
+    "search_in_browser": "I've searched for that information in your browser. You should see the results now.",
+    "send_email": "I've sent your email successfully. The recipient should receive it shortly.",
+    "make_event": "I've created that calendar event for you. It's been added to your calendar.",
+    "create_google_doc": "I've created a Google Doc with the content you requested. You can access it now."
+}
+
+def handle_chat(message):
+    messages = [{'role': 'user', 'content': message}]
+    logger.info(f"Processing message: {message}")
+
     response: ChatResponse = chat(
-        "llama3.2:latest",
+        'llama3.2:latest',
         messages=messages,
-        tools=[add_two_numbers, subtract_two_numbers, search_in_browser],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "send_email",
+                    "description": "Create and send an email message",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "to": {
+                                "type": "string",
+                                "description": "Recipient email address"
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": "Email subject"
+                            },
+                            "body": {
+                                "type": "string",
+                                "description": "Email body content"
+                            }
+                        },
+                        "required": ["to", "subject", "body"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "make_event",
+                    "description": "Create a calendar event",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Title of scheduled event"
+                            },
+                            "desc": {
+                                "type": "string",
+                                "description": "Description of scheduled event"
+                            },
+                            "start": {
+                                "type": "string",
+                                "description": "Start time in ISO format: YYYY-MM-DDTHH:MM:SS"
+                            },
+                            "end": {
+                                "type": "string",
+                                "description": "End time in ISO format: YYYY-MM-DDTHH:MM:SS"
+                            },
+                            "guests": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "List of email addresses for attendees"
+                            }
+                        },
+                        "required": ["title", "desc", "start", "end", "guests"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_in_browser",
+                    "description": "Search for information in web browser",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query to look up"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_google_doc",
+                    "description": "Create a Google Doc and insert text",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Title of the document"
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Text to insert into the document"
+                            }
+                        },
+                        "required": ["title", "text"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "handle_general_query",
+                    "description": "Handle general conversation or questions not requiring specific tools",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string", 
+                                "description": "The user's query"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+        ],
     )
     
-    if response.message.tool_calls:
+    if hasattr(response.message, 'tool_calls') and response.message.tool_calls:
+        logger.info(f"Model detected need for tool calls: {len(response.message.tool_calls)} tool(s)")
+        
         for tool in response.message.tool_calls:
-            function_to_call = available_functions.get(tool.function.name)
+            function_name = tool.function.name
+            function_to_call = available_functions.get(function_name)
+            
             if function_to_call:
-                output = function_to_call(**tool.function.arguments)
-                messages.append({'role': 'tool', 'content': str(output), 'name': tool.function.name})
-                final_response = chat("llama3.2:latest", messages=messages)
-                return final_response.message.content
+                args = tool.function.arguments
+                logger.info(f"Executing function: {function_name} with args: {args}")
+                
+                try:
+                    processed_args = {}
+                    for key, value in args.items():
+                        if key == "guests" and isinstance(value, str) and (value.startswith('[') or value.startswith('[')):
+                            try:
+                                processed_args[key] = json.loads(value)
+                            except json.JSONDecodeError:
+                                processed_args[key] = value
+                        else:
+                            processed_args[key] = value
+                    
+                    logger.info(f"Processed arguments: {processed_args}")
+                    
+                    output = function_to_call(**processed_args)
+                    logger.info(f"Function executed successfully")
+                    
+                    if function_name != "handle_general_query" and function_name in function_responses:
+                        return function_responses[function_name]
+                    else:
+                        messages.append({
+                            'role': 'tool', 
+                            'content': str(output), 
+                            'name': function_name
+                        })
+                        
+                        final_response = chat("jarvis:latest", messages=messages)
+                        return final_response.message.content
+                
+                except Exception as e:
+                    logger.error(f"Error executing function {function_name}: {str(e)}")
+                    return f"I tried to {function_name} but encountered an error: {str(e)}"
+            else:
+                logger.warning(f"Function {function_name} not found in available functions")
+    
+    logger.info("No specific tool calls detected, using fallback function")
+    try:
+        output = handle_general_query(message)
+        
+        messages.append({
+            'role': 'tool', 
+            'content': str(output), 
+            'name': 'handle_general_query'
+        })
+        
+        final_response = chat("jarvis:latest", messages=messages)
+        return final_response.message.content
+    except Exception as e:
+        logger.error(f"Error in fallback function: {str(e)}")
+    
+    return response.message.content
